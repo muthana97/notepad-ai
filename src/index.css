@@ -1,0 +1,14 @@
+/* src/index.css */
+:root {
+  background-color: #1e1e1e; /* Match your app color */
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #1e1e1e;
+  overflow: hidden;
+  color: #efefef;
+}
