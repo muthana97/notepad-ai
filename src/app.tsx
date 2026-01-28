@@ -5,11 +5,13 @@ import "./App.css";
 function App() {
   const [note, setNote] = useState("");
   const [status, setStatus] = useState("Ready");
+  const [isHud, setIsHud] = useState(false);
 
+  // Re-adding the missing logic that caused the "Invisible Window"
   const saveNote = async () => {
     setStatus("Saving...");
     try {
-      // Make sure this folder exists on your Mac!
+      // Ensure this path matches your Mac exactly
       const testPath = "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
       
       const response = await invoke("process_note", { 
@@ -26,14 +28,17 @@ function App() {
   };
 
   return (
-    <div className="app-container" style={{ 
-      backgroundColor: "#1e1e1e", 
-      color: "#efefef", 
-      height: "100vh", 
+    <div style={{ 
+      // Toggle between 70% and 95% opacity
+      backgroundColor: isHud ? "rgba(30, 30, 30, 0.7)" : "rgba(20, 20, 20, 0.95)", 
+      backdropFilter: "blur(12px)",
+      WebkitBackdropFilter: "blur(12px)",
+      height: "100vh",
       width: "100vw",
       display: "flex",
       flexDirection: "column",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      transition: "background-color 0.3s ease",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
     }}>
       <textarea
         value={note}
@@ -58,10 +63,29 @@ function App() {
         display: "flex", 
         justifyContent: "space-between", 
         alignItems: "center",
-        background: "#1a1a1a", 
-        borderTop: "1px solid #333"
+        background: "rgba(0, 0, 0, 0.3)", 
+        borderTop: "1px solid rgba(255, 255, 255, 0.1)"
       }}>
-        <span style={{ fontSize: "11px", color: "#666" }}>{status}</span>
+        <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
+          <span style={{ fontSize: "11px", color: "#aaa" }}>{status}</span>
+          
+          <button 
+            onClick={() => setIsHud(!isHud)}
+            style={{
+              padding: "4px 8px",
+              background: isHud ? "#007acc" : "rgba(255,255,255,0.1)",
+              color: "white",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: "4px",
+              cursor: "pointer",
+              fontSize: "10px",
+              fontWeight: "bold"
+            }}
+          >
+            {isHud ? "HUD: ON" : "HUD: OFF"}
+          </button>
+        </div>
+
         <button 
           onClick={saveNote}
           style={{
