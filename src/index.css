@@ -1,0 +1,17 @@
+/* src/index.css */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  /* This is the magic line: it allows the window to be see-through */
+  background-color: transparent !important;
+  overflow: hidden;
+  color: #efefef;
+}
+
+/* Optional: Smooth out the text rendering for dark backgrounds */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
