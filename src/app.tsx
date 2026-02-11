@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
@@ -8,94 +8,71 @@ function App() {
   const [status, setStatus] = useState("Ready");
   const [isHud, setIsHud] = useState(false);
 
-  // --- SESSION ID ---
   const [sessionId] = useState(() => {
     const now = new Date();
     return now.toISOString().replace(/[:.]/g, "-").slice(0, 16);
   });
 
-  const basePath =
-    "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
+  const basePath = "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
 
-  // --- NORMAL SAVE (autosave + button) ---
-  const saveNote = async () => {
+  // --- REUSABLE SAVE LOGIC ---
+  const performSave = useCallback(async (isFinal = false) => {
     if (note.trim() === "") return;
-
-    setStatus("Syncing...");
+    if (!isFinal) setStatus("Syncing...");
+    
     try {
-      const response = await invoke("process_note", {
+      await invoke("process_note", {
         content: note,
         sessionId,
         basePath,
       });
-
-      setStatus(response as string);
-      setTimeout(() => setStatus("Ready"), 2000);
+      if (!isFinal) {
+        setStatus("Synced");
+        setTimeout(() => setStatus("Ready"), 2000);
+      }
     } catch (err) {
       console.error(err);
-      setStatus(`Error: ${err}`);
+      setStatus("Error");
     }
-  };
+  }, [note, sessionId]);
 
-  // --- FORCE SAVE (used ONLY on close) ---
-  const forceSaveNote = async () => {
-    if (note.trim() === "") return;
-
-    await invoke("process_note", {
-      content: note,
-      sessionId,
-      basePath,
-    });
-  };
-
-  // --- AUTO SAVE (heartbeat) ---
+  // --- AUTO SAVE (Heartbeat) ---
   useEffect(() => {
-    if (note.trim() === "") return;
-
     const timer = setTimeout(() => {
-      saveNote().catch(console.error);
+      performSave();
     }, 5000);
-
     return () => clearTimeout(timer);
-  }, [note]);
+  }, [note, performSave]);
 
-  // --- FINAL SAVE ON WINDOW CLOSE ---
+  // --- FINAL SAVE HANDSHAKE (Route 1) ---
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenFn: any;
 
     const setup = async () => {
-      unlisten = await listen("request-final-save", async () => {
+      unlistenFn = await listen("request-final-save", async () => {
         console.log("Final save requested by Rust");
-
-        try {
-          await forceSaveNote();
-
-          // ⏳ allow filesystem flush before shutdown
-          await new Promise((r) => setTimeout(r, 200));
-        } finally {
-          await invoke("final_close_ready");
-        }
+        await performSave(true);
+        // Ensure disk flush
+        await new Promise((r) => setTimeout(r, 150));
+        await invoke("final_close_ready");
       });
     };
 
     setup();
-
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, [note]);
+    return () => { if (unlistenFn) unlistenFn(); };
+  }, [performSave]); 
 
   return (
     <div
+      className={`app-container ${isHud ? "hud-mode" : ""}`}
       style={{
-        backgroundColor: isHud
-          ? "rgba(30, 30, 30, 0.7)"
-          : "rgba(20, 20, 20, 0.95)",
+        backgroundColor: isHud ? "rgba(30, 30, 30, 0.7)" : "rgba(20, 20, 20, 0.95)",
         backdropFilter: "blur(12px)",
         height: "100vh",
         width: "100vw",
         display: "flex",
         flexDirection: "column",
+        transition: "background-color 0.3s ease"
       }}
     >
       <textarea
@@ -115,29 +92,53 @@ function App() {
       />
 
       <div
+        className="bottom-toolbar"
         style={{
           padding: "10px 20px",
           display: "flex",
           justifyContent: "space-between",
+          alignItems: "center",
           background: "rgba(0,0,0,0.3)",
         }}
       >
-        <span style={{ fontSize: "11px", color: "#aaa" }}>
-          {status} | {sessionId}
-        </span>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span style={{ fontSize: "11px", color: "#aaa" }}>
+            {status} | {sessionId}
+          </span>
+        </div>
 
-        <button
-          onClick={saveNote}
-          style={{
-            padding: "6px 12px",
-            background: "#333",
-            color: "#ccc",
-            border: "1px solid #444",
-            borderRadius: "4px",
-          }}
-        >
-          Keep Note
-        </button>
+        <div style={{ display: "flex", gap: "10px" }}>
+          {/* RESTORED HUD TOGGLE */}
+          <button
+            onClick={() => setIsHud(!isHud)}
+            style={{
+              padding: "6px 12px",
+              background: isHud ? "#555" : "#333",
+              color: "#ccc",
+              border: "1px solid #444",
+              borderRadius: "4px",
+              fontSize: "11px",
+              cursor: "pointer"
+            }}
+          >
+            {isHud ? "Solid View" : "HUD View"}
+          </button>
+
+          <button
+            onClick={() => performSave()}
+            style={{
+              padding: "6px 12px",
+              background: "#333",
+              color: "#ccc",
+              border: "1px solid #444",
+              borderRadius: "4px",
+              fontSize: "11px",
+              cursor: "pointer"
+            }}
+          >
+            Keep Note
+          </button>
+        </div>
       </div>
     </div>
   );
