@@ -1,2 +1,0 @@
-Look into the possible issues explained in chatgpt tmw. 
-For now I will get start the LLM integration. 
