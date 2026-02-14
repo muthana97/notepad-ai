@@ -97,11 +97,11 @@ fn get_recent_notes(base_path: String) -> Result<Vec<NotePreview>, String> {
 #[tauri::command]
 async fn process_note(
     content: String, 
-    session_id: String, // React must send 'session_id'
-    base_path: String,  // React must send 'base_path'
+    session_id: String, 
+    base_path: String,  
     state: tauri::State<'_, AppState>
 ) -> Result<String, String> {
-    // 1. Sync Session ID to State
+    // 1. Sync Session ID
     {
         let mut current_id = state.current_session_id.lock().unwrap();
         *current_id = session_id.clone();
@@ -113,18 +113,22 @@ async fn process_note(
         fs::create_dir_all(&session_path).map_err(|e| e.to_string())?;
     }
 
-    // 3. STEP ONE: Update the Raw Note (Instant)
+    // 3. Save Raw Note (Instant)
     fs::write(session_path.join("raw_note.txt"), &content).map_err(|e| e.to_string())?;
 
-    // 4. STEP TWO: Create/Update the Cleaned Mirror (AI)
+    // 4. FIRE AND FORGET: AI Cleaning in the background
     if !content.trim().is_empty() {
-        // We call the Janitor every time now
-        if let Ok(clean_text) = clean_with_janitor(&content).await {
-            fs::write(session_path.join("cleaned_note.md"), &clean_text).map_err(|e| e.to_string())?;
-        }
+        // We spawn a separate task so we don't 'await' it here
+        tauri::async_runtime::spawn(async move {
+            if let Ok(clean_text) = clean_with_janitor(&content).await {
+                let _ = fs::write(session_path.join("cleaned_note.md"), &clean_text);
+                println!("Background AI Cleaning finished for {}", session_id);
+            }
+        });
     }
 
-    Ok(format!("Mirror Updated: {}", session_id))
+    // Return immediately so the UI can close/continue
+    Ok(format!("Raw saved. AI cleaning in background: {}", session_id))
 }
 #[tauri::command]
 async fn get_ai_preview(content: String) -> Result<String, String> {
