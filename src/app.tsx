@@ -67,24 +67,24 @@ const performSave = useCallback(async (isFinal = false) => {
     return;
   }
 
-  setStatus(isFinal ? "Final Mirroring..." : "Mirroring Note...");
+  // If it's the final save, we don't even need to update the status 
+  // because the window will be gone in milliseconds.
+  if (!isFinal) setStatus("Mirroring Note...");
   
   try {
-    // 1. Tell Rust to save and AI-clean the note
+    // This now returns INSTANTLY because Rust isn't waiting for Ollama anymore
     await invoke("process_note", { content: contentToSave, sessionId, basePath });
     
-    // 2. THE MISSING PIECE: If this was a quit-request, tell Rust to destroy the window now
     if (isFinal) {
       await invoke("final_close_ready");
-      return; // Exit early as the app is closing
+      return;
     }
 
     setStatus("Mirror Synced");
     setTimeout(() => setStatus("Ready"), 2000);
   } catch (err) { 
     setStatus(`Error: ${err}`);
-    // Optional: even if save fails, you might want to close the app 
-    // if (isFinal) await invoke("final_close_ready");
+    if (isFinal) await invoke("final_close_ready"); // Close anyway on error
   }
 }, [sessionId, basePath]);
 
