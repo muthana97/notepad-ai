@@ -18,3 +18,45 @@ body {
 .markdown-body ul, .markdown-body ol { padding-left: 20px; }
 .markdown-body blockquote { border-left: 4px solid #4a90e2; padding-left: 15px; color: #aaa; font-style: italic; }
 .markdown-body code { background: #333; padding: 2px 4px; borderRadius: 4px; }
+
+.bulletin-screen {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 20px;
+    padding: 20px;
+}
+
+.note-card {
+    background: #1e1e1e;
+    border: 1px solid #333;
+    border-radius: 12px;
+    padding: 15px;
+    transition: transform 0.2s, border-color 0.2s;
+    height: 200px;
+    display: flex;
+    flex-direction: column;
+}
+
+.note-card:hover {
+    transform: translateY(-5px);
+    border-color: #4a90e2;
+}
+
+.note-card h3 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.note-card p {
+    font-size: 12px;
+    color: #888;
+    line-height: 1.4;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 6;
+    -webkit-box-orient: vertical;
+}

@@ -2,15 +2,22 @@ use tauri::{Emitter, Window, WindowEvent, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use std::fs;
 use std::path::Path;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use walkdir::WalkDir;
 
 struct AppState {
     current_session_id: Mutex<String>,
 }
 
-// 1. STICKING TO THE STRUCT APPROACH (Warning-free)
+#[derive(Serialize)]
+struct NotePreview {
+    path: String,
+    title: String,
+    preview: String,
+    modified: u64,
+}
+
 #[derive(Serialize)]
 struct OllamaRequest {
     model: String,
@@ -27,132 +34,138 @@ struct OllamaResponse {
 
 async fn clean_with_janitor(content: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    
-    let system_msg = "You are a text formatter. 
-    1. Organize the input text using Markdown (bullets, headers, bolding).
-    2. DO NOT add new information.
-    3. DO NOT infer meaning. 
-    4. DO NOT include greetings or meta-talk like 'Here is your note'.
-    5. If the input is a mess, just fix the grammar and structure. 
-    6. Return ONLY the formatted text.";
+    let system_msg = "You are a text formatter. 1. Organize using Markdown. 2. DO NOT add info. 3. DO NOT include greetings. Return ONLY formatted text.";
 
-    // Using the Struct we defined above
     let body = OllamaRequest {
         model: "llama3.2:3b".to_string(),
         prompt: content.to_string(),
         stream: false,
         system: system_msg.to_string(),
-        options: serde_json::json!({
-            "temperature": 0.1,
-            "num_predict": 1000
-        }),
+        options: serde_json::json!({"temperature": 0.1, "num_predict": 1000}),
     };
 
-    let res = client
-        .post("http://localhost:11434/api/generate")
-        .json(&body)
-        .send()
-        .await
+    let res = client.post("http://localhost:11434/api/generate").json(&body).send().await
         .map_err(|e| format!("Network Error: {}", e))?;
 
     let json: OllamaResponse = res.json().await.map_err(|e| format!("JSON Error: {}", e))?;
     Ok(json.response.trim().to_string())
 }
 
-fn save_session_data(content: &str, session_id: &str, base_path: &str) -> Result<(), String> {
-    let session_path = Path::new(base_path).join(format!("TEMP_{}", session_id));
-    if !session_path.exists() {
-        fs::create_dir_all(&session_path).map_err(|e| e.to_string())?;
-    }
-    fs::write(session_path.join("raw_note.txt"), content).map_err(|e| e.to_string())?;
+#[tauri::command]
+fn get_recent_notes(base_path: String) -> Result<Vec<NotePreview>, String> {
+    let mut notes = Vec::new();
+    let path = Path::new(&base_path);
+    if !path.exists() { return Ok(vec![]); }
 
-    let re = Regex::new(r"(?m)^\s*>>(.*)").unwrap();
-    let mut last_idx = 0;
-    let mut last_title: Option<String> = None;
+    // We walk through the base folder
+    for entry in WalkDir::new(path)
+        .min_depth(1) // Look inside TEMP folders
+        .max_depth(2) // Don't go too deep
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file()) 
+    {
+        let file_path = entry.path();
+        let filename = file_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
-    for cap in re.captures_iter(content) {
-        let full_match = cap.get(0).unwrap();
-        let title = cap.get(1).unwrap().as_str().trim().replace("/", "-");
-        if let Some(name) = last_title {
-            let section = &content[last_idx..full_match.start()];
-            let _ = fs::write(session_path.join(format!("{}.txt", name)), section.trim());
+        // We only want to show the "Raw" note or the "Cleaned" note on the bulletin
+        // Usually, showing the Cleaned version looks better!
+        if filename == "cleaned_note.md" || filename == "raw_note.txt" {
+            // If both exist, this logic might show two cards for one note.
+            // Let's prioritize cleaned_note.md and skip raw_note.txt if cleaned exists.
+            let parent = file_path.parent().unwrap();
+            if filename == "raw_note.txt" && parent.join("cleaned_note.md").exists() {
+                continue; 
+            }
+
+            let content = fs::read_to_string(file_path).unwrap_or_default();
+            let meta = entry.metadata().map_err(|e| e.to_string())?;
+            
+            notes.push(NotePreview {
+                path: file_path.to_str().unwrap().to_string(),
+                // Use the Folder Name (TEMP_...) as the title so the user knows which session it is
+                title: parent.file_name().unwrap().to_str().unwrap().to_string(),
+                preview: content.chars().take(100).collect(),
+                modified: meta.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            });
         }
-        last_idx = full_match.end();
-        last_title = Some(title);
     }
-
-    if let Some(name) = last_title {
-        let section = &content[last_idx..];
-        let _ = fs::write(session_path.join(format!("{}.txt", name)), section.trim());
-    }
-    Ok(())
+    notes.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(notes)
 }
 
 #[tauri::command]
 async fn process_note(
     content: String, 
-    session_id: String, 
-    base_path: String, 
-    run_janitor: bool,
+    session_id: String, // React must send 'session_id'
+    base_path: String,  // React must send 'base_path'
     state: tauri::State<'_, AppState>
 ) -> Result<String, String> {
+    // 1. Sync Session ID to State
     {
         let mut current_id = state.current_session_id.lock().unwrap();
         *current_id = session_id.clone();
     } 
 
-    save_session_data(&content, &session_id, &base_path)?;
+    // 2. Prepare Directory
+    let session_path = Path::new(&base_path).join(format!("TEMP_{}", session_id));
+    if !session_path.exists() {
+        fs::create_dir_all(&session_path).map_err(|e| e.to_string())?;
+    }
 
-    if run_janitor {
+    // 3. STEP ONE: Update the Raw Note (Instant)
+    fs::write(session_path.join("raw_note.txt"), &content).map_err(|e| e.to_string())?;
+
+    // 4. STEP TWO: Create/Update the Cleaned Mirror (AI)
+    if !content.trim().is_empty() {
+        // We call the Janitor every time now
         if let Ok(clean_text) = clean_with_janitor(&content).await {
-            let session_path = Path::new(&base_path).join(format!("TEMP_{}", session_id));
-            let _ = fs::write(session_path.join("cleaned_note.md"), &clean_text);
-            return Ok(format!("CLEANED:{}", clean_text));
+            fs::write(session_path.join("cleaned_note.md"), &clean_text).map_err(|e| e.to_string())?;
         }
     }
-    Ok(format!("Synced: {}", session_id))
-}
 
-// 2. THE HANDSHAKE LANDING SPOT
+    Ok(format!("Mirror Updated: {}", session_id))
+}
+#[tauri::command]
+async fn get_ai_preview(content: String) -> Result<String, String> {
+    if content.trim().is_empty() {
+        return Ok("No content to preview.".to_string());
+    }
+    // Call your existing janitor function directly
+    let cleaned = clean_with_janitor(&content).await?;
+    Ok(cleaned)
+}
 #[tauri::command]
 fn final_close_ready(window: Window) {
-    // window.destroy() is more forceful than .close(), perfect for finishing the task
     window.destroy().unwrap();
 }
 
-fn wipe_session(session_id: &str, base_path: &str) {
-    let session_path = Path::new(base_path).join(format!("TEMP_{}", session_id));
-    if session_path.exists() {
-        let _ = fs::remove_dir_all(session_path);
-    }
+// REMOVED: wipe_session (It was causing the accidental deletions)
+
+#[tauri::command]
+fn load_note(path: String) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
 fn main() {
     tauri::Builder::default()
         .manage(AppState { current_session_id: Mutex::new(String::new()) })
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![process_note, final_close_ready])
+        .invoke_handler(tauri::generate_handler![process_note, final_close_ready, get_recent_notes, load_note, get_ai_preview])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let win = window.clone();
-                let app_handle = window.app_handle().clone();
-
+                
                 window.dialog()
-                    .message("Keep this session? (Canceling deletes temp files)")
+                    .message("Keep this session? (AI will clean and save)")
                     .buttons(MessageDialogButtons::OkCancel)
                     .show(move |result| {
                         if result {
-                            // Signals App.tsx to save and then call final_close_ready
-                            win.emit("request-final-save", ()).unwrap();
+                            // Only emit if user wants to save
+                            win.emit("request-final-save", ()).unwrap(); 
                         } else {
-                            let state = app_handle.state::<AppState>();
-                            let session_id = state.current_session_id.lock().unwrap().clone();
-                            let base_path = "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
-                            
-                            if !session_id.is_empty() {
-                                wipe_session(&session_id, base_path);
-                            }
+                            // If they discard, we just close. No wiping, no deleting.
                             win.destroy().unwrap();
                         }
                     });
