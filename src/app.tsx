@@ -7,8 +7,8 @@ import "./App.css";
 function App() {
   const [originalContent, setOriginalContent] = useState("");
   const [view, setView] = useState<"home" | "editor">("home");
-  const [note, setNote] = useState(""); // This is ALWAYS the Raw text
-  const [previewContent, setPreviewContent] = useState(""); // This is the AI-cleaned display
+  const [note, setNote] = useState(""); 
+  const [previewContent, setPreviewContent] = useState(""); 
   
   const sessionId = useRef(new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16)).current;
   const [currentFilename, setCurrentFilename] = useState(`TEMP_${sessionId}`); 
@@ -18,8 +18,8 @@ function App() {
   const [isPreview, setIsPreview] = useState(false);
   const [recentNotes, setRecentNotes] = useState<any[]>([]);
 
+  // Ref acts as the "Current Value" for async operations without triggering re-renders
   const noteRef = useRef(note);
-  useEffect(() => { noteRef.current = note; }, [note]);
 
   const basePath = "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
 
@@ -32,17 +32,16 @@ function App() {
 
   useEffect(() => { if (view === "home") refreshBulletin(); }, [view, refreshBulletin]);
 
-  // THE DYNAMIC TOGGLE: Triggers AI cleanup without saving to disk
- const handleTogglePreview = async () => {
+  // FIX 1 & 3: Memoized toggle logic to prevent shortcut listener churn
+  const handleTogglePreview = useCallback(async () => {
     if (!isPreview) {
-      // 1. Check if anything actually changed
+      // Accessing current 'note' from the state captured in this memoized instance
       if (note === originalContent && previewContent) {
         setStatus("Showing saved preview (No changes)");
         setIsPreview(true);
-        return; // EXIT EARLY - Don't call Ollama
+        return;
       }
 
-      // 2. If it is different, call the Janitor
       setStatus("AI Janitor working...");
       try {
         const cleaned: string = await invoke("get_ai_preview", { content: note });
@@ -58,31 +57,56 @@ function App() {
       setIsPreview(false);
       setStatus("Ready");
     }
-  };
+  }, [isPreview, note, originalContent, previewContent]);
 
-  const performSave = useCallback(async (isFinal = false) => {
-    const contentToSave = noteRef.current;
-    if (contentToSave.trim() === "") {
-        if (isFinal) await invoke("final_close_ready");
-        return;
+const performSave = useCallback(async (isFinal = false) => {
+  const contentToSave = noteRef.current; 
+  
+  if (contentToSave.trim() === "") {
+    if (isFinal) await invoke("final_close_ready");
+    return;
+  }
+
+  setStatus(isFinal ? "Final Mirroring..." : "Mirroring Note...");
+  
+  try {
+    // 1. Tell Rust to save and AI-clean the note
+    await invoke("process_note", { content: contentToSave, sessionId, basePath });
+    
+    // 2. THE MISSING PIECE: If this was a quit-request, tell Rust to destroy the window now
+    if (isFinal) {
+      await invoke("final_close_ready");
+      return; // Exit early as the app is closing
     }
-    setStatus(isFinal ? "Final Mirroring..." : "Mirroring Note...");
-    try {
-      // This writes BOTH raw_note.txt and cleaned_note.md to disk
-      await invoke("process_note", { content: contentToSave, sessionId, basePath });
-      setStatus("Mirror Synced");
-      if (!isFinal) setTimeout(() => setStatus("Ready"), 2000);
-    } catch (err) { setStatus(`Error: ${err}`); }
-  }, [sessionId, basePath]);
 
-  // Handle keyboard shortcuts
+    setStatus("Mirror Synced");
+    setTimeout(() => setStatus("Ready"), 2000);
+  } catch (err) { 
+    setStatus(`Error: ${err}`);
+    // Optional: even if save fails, you might want to close the app 
+    // if (isFinal) await invoke("final_close_ready");
+  }
+}, [sessionId, basePath]);
+
+useEffect(() => {
+  // Listen for the "request-final-save" event from the Rust backend
+  const unlisten = listen("request-final-save", async () => {
+    console.log("Received close request, performing final save...");
+    // We pass 'true' to indicate this is the final save before closing
+    await performSave(true);
+  });
+
+  return () => {
+    unlisten.then((f) => f());
+  };
+}, [performSave]);
+  // FIX 3: Keyboard shortcuts now stable
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "t") {
         e.preventDefault();
         setIsHud((prev) => !prev);
       }
-      // Toggle Preview with Cmd/Ctrl + P
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
         e.preventDefault();
         handleTogglePreview();
@@ -91,9 +115,9 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [view, isPreview, note]); // Added dependencies for the toggle
+  }, [view, handleTogglePreview]); 
 
-const loadNote = async (path: string) => {
+  const loadNote = async (path: string) => {
     try {
       const rawPath = path.endsWith("cleaned_note.md") 
         ? path.replace("cleaned_note.md", "raw_note.txt") 
@@ -104,8 +128,9 @@ const loadNote = async (path: string) => {
       const cleanedContent: string = await invoke("load_note", { path: cleanedPath });
 
       setNote(rawContent);
-      setOriginalContent(rawContent); // Store the "Source of Truth"
-      setPreviewContent(cleanedContent); // Store the existing AI version
+      noteRef.current = rawContent; // Sync Ref on load
+      setOriginalContent(rawContent);
+      setPreviewContent(cleanedContent); 
       
       const parts = rawPath.split('/');
       setCurrentFilename(parts[parts.length - 2] || "Note");
@@ -114,14 +139,15 @@ const loadNote = async (path: string) => {
     } catch (err) { setStatus("Error loading source"); }
   };
 
+  // UI Renders
   if (view === "home") {
     return (
       <div className="app-container" style={{ backgroundColor: "#121212", height: "100vh", width: "100vw", padding: "40px", overflowY: "auto", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
         <h2 style={{ color: "white", fontWeight: 300, marginBottom: "30px" }}>Recent Notes</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "20px", paddingBottom: "40px" }}>
-          <div onClick={() => { setNote(""); setView("editor"); setIsPreview(false); }} style={{ height: "200px", border: "2px dashed #444", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#666", fontSize: "40px" }}> + </div>
-          {recentNotes.map((n, i) => (
-            <div key={i} onClick={() => loadNote(n.path)} style={{ height: "200px", background: "#1e1e1e", borderRadius: "12px", padding: "20px", cursor: "pointer", border: "1px solid #333", display: "flex", flexDirection: "column", overflow: "hidden", boxSizing: "border-box" }}>
+          <div onClick={() => { setNote(""); noteRef.current = ""; setView("editor"); setIsPreview(false); }} style={{ height: "200px", border: "2px dashed #444", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#666", fontSize: "40px" }}> + </div>
+          {recentNotes.map((n) => (
+            <div key={n.path} onClick={() => loadNote(n.path)} style={{ height: "200px", background: "#1e1e1e", borderRadius: "12px", padding: "20px", cursor: "pointer", border: "1px solid #333", display: "flex", flexDirection: "column", overflow: "hidden", boxSizing: "border-box" }}>
               <div style={{ color: "#4a90e2", fontWeight: "bold", fontSize: "11px", marginBottom: "8px" }}>{n.title.replace("TEMP_", "")}</div>
               <div style={{ color: "#d0d0d0", fontSize: "11px", lineHeight: "1.4", flex: 1, overflow: "hidden", maskImage: "linear-gradient(to bottom, black 60%, transparent 100%)", WebkitMaskImage: "linear-gradient(to bottom, black 60%, transparent 100%)" }}>
                 <ReactMarkdown>{n.preview}</ReactMarkdown>
@@ -141,7 +167,16 @@ const loadNote = async (path: string) => {
             <ReactMarkdown>{previewContent}</ReactMarkdown>
           </div>
         ) : (
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} style={{ flex: 1, background: "transparent", color: "white", border: "none", padding: "30px", fontSize: "18px", outline: "none", resize: "none", fontFamily: "monospace" }} placeholder="Start typing..." />
+          <textarea 
+            value={note} 
+            onChange={(e) => {
+              const val = e.target.value;
+              setNote(val);
+              noteRef.current = val; // FIX 2: Direct Ref update
+            }} 
+            style={{ flex: 1, background: "transparent", color: "white", border: "none", padding: "30px", fontSize: "18px", outline: "none", resize: "none", fontFamily: "monospace" }} 
+            placeholder="Start typing..." 
+          />
         )}
       </div>
       <div style={{ padding: "10px 20px", display: "flex", justifyContent: "space-between", background: "rgba(0,0,0,0.3)", alignItems: "center" }}>
