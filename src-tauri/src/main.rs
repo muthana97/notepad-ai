@@ -1,13 +1,17 @@
-use tauri::{Emitter, Window, WindowEvent};
+use tauri::{Emitter, Window, WindowEvent, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use walkdir::WalkDir;
+use tokio::task;
 
 struct AppState {
     current_session_id: Mutex<String>,
+    is_closing: AtomicBool,
+    close_timeout_active: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -16,6 +20,7 @@ struct NotePreview {
     title: String,
     preview: String,
     modified: u64,
+    has_cleaned: bool,
 }
 
 #[derive(Serialize)]
@@ -34,7 +39,7 @@ struct OllamaResponse {
 
 async fn clean_with_janitor(content: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let system_msg = "You are a text formatter. 1. Organize using Markdown. 2. DO NOT add info. 3. DO NOT include greetings. Return ONLY formatted text.";
+    let system_msg = "You are a text clarity enhancer 1. Organize the text to enhance clarity using bullet points where necessary . 2. DO NOT add info. 3. DO NOT include greetings. Return ONLY formatted text.";
 
     let body = OllamaRequest {
         model: "llama3.2:3b".to_string(),
@@ -57,10 +62,9 @@ fn get_recent_notes(base_path: String) -> Result<Vec<NotePreview>, String> {
     let path = Path::new(&base_path);
     if !path.exists() { return Ok(vec![]); }
 
-    // We walk through the base folder
     for entry in WalkDir::new(path)
-        .min_depth(1) // Look inside TEMP folders
-        .max_depth(2) // Don't go too deep
+        .min_depth(1)
+        .max_depth(2)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file()) 
@@ -68,25 +72,19 @@ fn get_recent_notes(base_path: String) -> Result<Vec<NotePreview>, String> {
         let file_path = entry.path();
         let filename = file_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
-        // We only want to show the "Raw" note or the "Cleaned" note on the bulletin
-        // Usually, showing the Cleaned version looks better!
-        if filename == "cleaned_note.md" || filename == "raw_note.txt" {
-            // If both exist, this logic might show two cards for one note.
-            // Let's prioritize cleaned_note.md and skip raw_note.txt if cleaned exists.
+        if filename == "raw_note.txt" {
             let parent = file_path.parent().unwrap();
-            if filename == "raw_note.txt" && parent.join("cleaned_note.md").exists() {
-                continue; 
-            }
+            let has_cleaned = parent.join("cleaned_note.md").exists();
 
             let content = fs::read_to_string(file_path).unwrap_or_default();
             let meta = entry.metadata().map_err(|e| e.to_string())?;
             
             notes.push(NotePreview {
                 path: file_path.to_str().unwrap().to_string(),
-                // Use the Folder Name (TEMP_...) as the title so the user knows which session it is
                 title: parent.file_name().unwrap().to_str().unwrap().to_string(),
                 preview: content.chars().take(100).collect(),
                 modified: meta.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                has_cleaned,
             });
         }
     }
@@ -97,78 +95,133 @@ fn get_recent_notes(base_path: String) -> Result<Vec<NotePreview>, String> {
 #[tauri::command]
 async fn process_note(
     content: String, 
-    session_id: String, // React must send 'session_id'
-    base_path: String,  // React must send 'base_path'
+    session_id: String,
+    base_path: String,
+    background_clean: Option<bool>,
     state: tauri::State<'_, AppState>
 ) -> Result<String, String> {
-    // 1. Sync Session ID to State
     {
         let mut current_id = state.current_session_id.lock().unwrap();
         *current_id = session_id.clone();
     } 
 
-    // 2. Prepare Directory
     let session_path = Path::new(&base_path).join(format!("TEMP_{}", session_id));
     if !session_path.exists() {
         fs::create_dir_all(&session_path).map_err(|e| e.to_string())?;
     }
 
-    // 3. STEP ONE: Update the Raw Note (Instant)
     fs::write(session_path.join("raw_note.txt"), &content).map_err(|e| e.to_string())?;
 
-    // 4. STEP TWO: Create/Update the Cleaned Mirror (AI)
     if !content.trim().is_empty() {
-        // We call the Janitor every time now
-        if let Ok(clean_text) = clean_with_janitor(&content).await {
-            fs::write(session_path.join("cleaned_note.md"), &clean_text).map_err(|e| e.to_string())?;
+        let should_background = background_clean.unwrap_or(false);
+        
+        if should_background {
+            let content_clone = content.clone();
+            let path_clone = session_path.clone();
+            
+            task::spawn(async move {
+                println!("Background cleaning starting...");
+                if let Ok(clean_text) = clean_with_janitor(&content_clone).await {
+                    let _ = fs::write(path_clone.join("cleaned_note.md"), &clean_text);
+                    println!("Background cleaning complete");
+                }
+            });
+        } else {
+            if let Ok(clean_text) = clean_with_janitor(&content).await {
+                fs::write(session_path.join("cleaned_note.md"), &clean_text)
+                    .map_err(|e| e.to_string())?;
+            }
         }
     }
 
-    Ok(format!("Mirror Updated: {}", session_id))
+    Ok(format!("Saved: {}", session_id))
 }
+
 #[tauri::command]
 async fn get_ai_preview(content: String) -> Result<String, String> {
     if content.trim().is_empty() {
         return Ok("No content to preview.".to_string());
     }
-    // Call your existing janitor function directly
     let cleaned = clean_with_janitor(&content).await?;
     Ok(cleaned)
 }
+
 #[tauri::command]
-fn final_close_ready(window: Window) {
+fn final_close_ready(window: Window, state: tauri::State<'_, AppState>) {
+    state.is_closing.store(false, Ordering::SeqCst);
+    state.close_timeout_active.store(false, Ordering::SeqCst);
     window.destroy().unwrap();
 }
 
-// REMOVED: wipe_session (It was causing the accidental deletions)
-
 #[tauri::command]
 fn load_note(path: String) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| e.to_string())
+    let path_obj = Path::new(&path);
+    
+    if !path_obj.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+    
+    fs::read_to_string(&path).map_err(|e| format!("Read error for {}: {}", path, e))
+}
+
+// UPDATED: Sequential 2-dialog approach for 3 options
+fn show_save_dialog(window: &Window) {
+    let win = window.clone();
+    
+    // Dialog 1: Save or Discard?
+    window.dialog()
+        .message("Save note before closing?")
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |save_result| {
+            if save_result {
+                // User clicked OK (Save) - now ask about AI
+                let win_ai = win.clone();
+                win_ai.dialog()
+                    .message("Run AI cleanup in background?\n\n(Takes ~10 seconds, you'll see ✨ when complete)")
+                    .buttons(MessageDialogButtons::OkCancel)
+                    .show(move |ai_result| {
+                        if ai_result {
+                            // OK = Save + AI Clean (background)
+                            let _ = win_ai.emit("request-final-save-ai", ());
+                        } else {
+                            // Cancel = Just Save (no AI)
+                            let _ = win_ai.emit("request-final-save", ());
+                        }
+                    });
+            } else {
+                // Cancel = Discard and close
+                let _ = win.destroy();
+            }
+        });
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState { current_session_id: Mutex::new(String::new()) })
+        .manage(AppState { 
+            current_session_id: Mutex::new(String::new()),
+            is_closing: AtomicBool::new(false),
+            close_timeout_active: AtomicBool::new(false),
+        })
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![process_note, final_close_ready, get_recent_notes, load_note, get_ai_preview])
+        .invoke_handler(tauri::generate_handler![
+            process_note, 
+            final_close_ready, 
+            get_recent_notes, 
+            load_note, 
+            get_ai_preview
+        ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let win = window.clone();
+                let state = window.state::<AppState>();
                 
-                window.dialog()
-                    .message("Keep this session? (AI will clean and save)")
-                    .buttons(MessageDialogButtons::OkCancel)
-                    .show(move |result| {
-                        if result {
-                            // Only emit if user wants to save
-                            win.emit("request-final-save", ()).unwrap(); 
-                        } else {
-                            // If they discard, we just close. No wiping, no deleting.
-                            win.destroy().unwrap();
-                        }
-                    });
+                if state.is_closing.load(Ordering::SeqCst) {
+                    return;
+                }
+                
+                api.prevent_close();
+                state.is_closing.store(true, Ordering::SeqCst);
+                
+                show_save_dialog(window);
             }
         })
         .run(tauri::generate_context!())
