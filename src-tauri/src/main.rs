@@ -164,32 +164,18 @@ fn load_note(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("Read error for {}: {}", path, e))
 }
 
-// UPDATED: Sequential 2-dialog approach for 3 options
 fn show_save_dialog(window: &Window) {
     let win = window.clone();
     
-    // Dialog 1: Save or Discard?
     window.dialog()
         .message("Save note before closing?")
         .buttons(MessageDialogButtons::OkCancel)
         .show(move |save_result| {
             if save_result {
-                // User clicked OK (Save) - now ask about AI
-                let win_ai = win.clone();
-                win_ai.dialog()
-                    .message("Run AI cleanup in background?\n\n(Takes ~10 seconds, you'll see ✨ when complete)")
-                    .buttons(MessageDialogButtons::OkCancel)
-                    .show(move |ai_result| {
-                        if ai_result {
-                            // OK = Save + AI Clean (background)
-                            let _ = win_ai.emit("request-final-save-ai", ());
-                        } else {
-                            // Cancel = Just Save (no AI)
-                            let _ = win_ai.emit("request-final-save", ());
-                        }
-                    });
+                // Only save (no AI anymore)
+                let _ = win.emit("request-final-save", ());
             } else {
-                // Cancel = Discard and close
+                // Discard and close
                 let _ = win.destroy();
             }
         });
