@@ -164,18 +164,32 @@ fn load_note(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("Read error for {}: {}", path, e))
 }
 
+// UPDATED: Sequential 2-dialog approach for 3 options
 fn show_save_dialog(window: &Window) {
     let win = window.clone();
     
+    // Dialog 1: Save or Discard?
     window.dialog()
         .message("Save note before closing?")
         .buttons(MessageDialogButtons::OkCancel)
         .show(move |save_result| {
             if save_result {
-                // Only save (no AI anymore)
-                let _ = win.emit("request-final-save", ());
+                // User clicked OK (Save) - now ask about AI
+                let win_ai = win.clone();
+                win_ai.dialog()
+                    .message("Run AI cleanup in background?\n\n(Takes ~10 seconds, you'll see ✨ when complete)")
+                    .buttons(MessageDialogButtons::OkCancel)
+                    .show(move |ai_result| {
+                        if ai_result {
+                            // OK = Save + AI Clean (background)
+                            let _ = win_ai.emit("request-final-save-ai", ());
+                        } else {
+                            // Cancel = Just Save (no AI)
+                            let _ = win_ai.emit("request-final-save", ());
+                        }
+                    });
             } else {
-                // Discard and close
+                // Cancel = Discard and close
                 let _ = win.destroy();
             }
         });
@@ -205,9 +219,35 @@ fn main() {
                 }
                 
                 api.prevent_close();
-                state.is_closing.store(true, Ordering::SeqCst);
-                
-                show_save_dialog(window);
+
+let current_id = state.current_session_id.lock().unwrap().clone();
+
+// If no session yet → just close
+if current_id.is_empty() {
+    window.destroy().unwrap();
+    return;
+}
+
+let session_path = Path::new("/Users/muthana/Documents/Projects/notepad-ai/notes_test")
+    .join(format!("TEMP_{}", current_id));
+
+let raw_file = session_path.join("raw_note.txt");
+
+// If file doesn't exist OR is empty → no need to prompt
+if !raw_file.exists() {
+    window.destroy().unwrap();
+    return;
+}
+
+let content = fs::read_to_string(&raw_file).unwrap_or_default();
+if content.trim().is_empty() {
+    window.destroy().unwrap();
+    return;
+}
+
+// Otherwise → real unsaved content
+state.is_closing.store(true, Ordering::SeqCst);
+show_save_dialog(window);
             }
         })
         .run(tauri::generate_context!())

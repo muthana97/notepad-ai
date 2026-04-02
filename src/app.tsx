@@ -48,11 +48,16 @@ function App() {
     return confirmed;
   };
 
-  const handleGoHome = async () => {
-    if (await confirmNavigation()) {
-      setView("home");
-    }
-  };
+ const handleGoHome = async () => {
+  if (await confirmNavigation()) {
+    // Reset editor state to avoid false dirty detection
+    setNote("");
+    noteRef.current = "";
+    setOriginalContent("");
+    setEnhancedContent("");
+    setView("home");
+  }
+};
 
   // ✅ NEW ENHANCE FUNCTION
   const handleEnhance = useCallback(async () => {
