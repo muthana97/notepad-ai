@@ -1,4 +1,0 @@
-Just checking if it is still functional. 
-I made changes to app.tsx
-Changed the testPath, from being hard coded.
-There ya go
