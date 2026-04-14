@@ -12,6 +12,7 @@ struct AppState {
     current_session_id: Mutex<String>,
     is_closing: AtomicBool,
     close_timeout_active: AtomicBool,
+    is_dirty: AtomicBool, // Track unsaved changes
 }
 
 #[derive(Serialize)]
@@ -54,6 +55,11 @@ async fn clean_with_janitor(content: &str) -> Result<String, String> {
 
     let json: OllamaResponse = res.json().await.map_err(|e| format!("JSON Error: {}", e))?;
     Ok(json.response.trim().to_string())
+}
+
+#[tauri::command]
+fn set_dirty(state: tauri::State<'_, AppState>, dirty: bool) {
+    state.is_dirty.store(dirty, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -164,32 +170,16 @@ fn load_note(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("Read error for {}: {}", path, e))
 }
 
-// UPDATED: Sequential 2-dialog approach for 3 options
 fn show_save_dialog(window: &Window) {
     let win = window.clone();
     
-    // Dialog 1: Save or Discard?
     window.dialog()
         .message("Save note before closing?")
         .buttons(MessageDialogButtons::OkCancel)
         .show(move |save_result| {
             if save_result {
-                // User clicked OK (Save) - now ask about AI
-                let win_ai = win.clone();
-                win_ai.dialog()
-                    .message("Run AI cleanup in background?\n\n(Takes ~10 seconds, you'll see ✨ when complete)")
-                    .buttons(MessageDialogButtons::OkCancel)
-                    .show(move |ai_result| {
-                        if ai_result {
-                            // OK = Save + AI Clean (background)
-                            let _ = win_ai.emit("request-final-save-ai", ());
-                        } else {
-                            // Cancel = Just Save (no AI)
-                            let _ = win_ai.emit("request-final-save", ());
-                        }
-                    });
+                let _ = win.emit("request-final-save", ());
             } else {
-                // Cancel = Discard and close
                 let _ = win.destroy();
             }
         });
@@ -201,6 +191,7 @@ fn main() {
             current_session_id: Mutex::new(String::new()),
             is_closing: AtomicBool::new(false),
             close_timeout_active: AtomicBool::new(false),
+            is_dirty: AtomicBool::new(false),
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -208,46 +199,29 @@ fn main() {
             final_close_ready, 
             get_recent_notes, 
             load_note, 
-            get_ai_preview
+            get_ai_preview,
+            set_dirty
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppState>();
                 
-                if state.is_closing.load(Ordering::SeqCst) {
+                // Only show dialog if NOT already closing AND state is DIRTY
+                if state.is_closing.load(Ordering::SeqCst) || !state.is_dirty.load(Ordering::SeqCst) {
                     return;
                 }
                 
                 api.prevent_close();
 
-let current_id = state.current_session_id.lock().unwrap().clone();
+                let current_id = state.current_session_id.lock().unwrap().clone();
 
-// If no session yet → just close
-if current_id.is_empty() {
-    window.destroy().unwrap();
-    return;
-}
+                if current_id.is_empty() {
+                    window.destroy().unwrap();
+                    return;
+                }
 
-let session_path = Path::new("/Users/muthana/Documents/Projects/notepad-ai/notes_test")
-    .join(format!("TEMP_{}", current_id));
-
-let raw_file = session_path.join("raw_note.txt");
-
-// If file doesn't exist OR is empty → no need to prompt
-if !raw_file.exists() {
-    window.destroy().unwrap();
-    return;
-}
-
-let content = fs::read_to_string(&raw_file).unwrap_or_default();
-if content.trim().is_empty() {
-    window.destroy().unwrap();
-    return;
-}
-
-// Otherwise → real unsaved content
-state.is_closing.store(true, Ordering::SeqCst);
-show_save_dialog(window);
+                state.is_closing.store(true, Ordering::SeqCst);
+                show_save_dialog(window);
             }
         })
         .run(tauri::generate_context!())

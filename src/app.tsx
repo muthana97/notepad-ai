@@ -10,11 +10,10 @@ function App() {
   const [view, setView] = useState<"home" | "editor">("home");
   const [note, setNote] = useState("");
 
-  // ✅ NEW STATE
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [enhancedContent, setEnhancedContent] = useState("");
 
-  const sessionId = useRef(new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16)).current;
+  const [sessionId, setSessionId] = useState(() => new Date().toISOString().replace(/[:.]/g, "-").slice(0, 18));
   const [currentFilename, setCurrentFilename] = useState(`TEMP_${sessionId}`);
 
   const [status, setStatus] = useState("Ready");
@@ -28,6 +27,11 @@ function App() {
   const basePath = "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
 
   const isDirty = note !== originalContent;
+
+  // Sync dirty state to Rust whenever it changes
+  useEffect(() => {
+    invoke("set_dirty", { dirty: isDirty }).catch(console.error);
+  }, [isDirty]);
 
   const refreshBulletin = useCallback(async () => {
     try {
@@ -48,18 +52,16 @@ function App() {
     return confirmed;
   };
 
- const handleGoHome = async () => {
-  if (await confirmNavigation()) {
-    // Reset editor state to avoid false dirty detection
-    setNote("");
-    noteRef.current = "";
-    setOriginalContent("");
-    setEnhancedContent("");
-    setView("home");
-  }
-};
+  const handleGoHome = async () => {
+    if (await confirmNavigation()) {
+      setNote("");
+      noteRef.current = "";
+      setOriginalContent("");
+      setEnhancedContent("");
+      setView("home");
+    }
+  };
 
-  // ✅ NEW ENHANCE FUNCTION
   const handleEnhance = useCallback(async () => {
     if (isEnhancing) {
       setIsEnhancing(false);
@@ -88,7 +90,6 @@ function App() {
     }
   }, [isEnhancing, note]);
 
-  // ✅ APPLY / DISCARD
   const applyEnhancement = () => {
     setNote(enhancedContent);
     noteRef.current = enhancedContent;
@@ -123,12 +124,13 @@ function App() {
         backgroundClean
       });
 
+      setOriginalContent(contentToSave);
+
       if (isFinal) {
         await invoke("final_close_ready");
         return;
       }
 
-      setOriginalContent(contentToSave);
       setStatus(backgroundClean ? "Saved (Cleaning...)" : "Saved");
       setTimeout(() => setStatus("Ready"), 2000);
     } catch (err) {
@@ -143,15 +145,8 @@ function App() {
       await performSave({ isFinal: true, backgroundClean: false });
     });
 
-    const unlistenSaveAi = listen("request-final-save-ai", async () => {
-      if (isClosing) return;
-      setIsClosing(true);
-      await performSave({ isFinal: true, backgroundClean: true });
-    });
-
     return () => {
       unlistenSave.then(f => f());
-      unlistenSaveAi.then(f => f());
     };
   }, [performSave, isClosing]);
 
@@ -189,7 +184,12 @@ function App() {
       setOriginalContent(rawContent);
 
       const parts = folderPath.split('/');
-      setCurrentFilename(parts[parts.length - 1] || "Note");
+      const folderName = parts[parts.length - 1] || "Note";
+      
+      const id = folderName.replace("TEMP_", "");
+      setSessionId(id);
+      setCurrentFilename(folderName);
+      
       setView("editor");
       setStatus("Loaded");
     } catch (err) {
@@ -200,12 +200,16 @@ function App() {
 
   const handleNewNote = async () => {
     if (await confirmNavigation()) {
+      const newId = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 18);
+      setSessionId(newId);
+      setCurrentFilename(`TEMP_${newId}`);
+      
       setNote("");
       noteRef.current = "";
       setOriginalContent("");
       setEnhancedContent("");
-      setCurrentFilename(`TEMP_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16)}`);
       setView("editor");
+      setStatus("New Note");
     }
   };
 
@@ -255,7 +259,6 @@ function App() {
     <div className={`app-container ${isHud ? "hud-mode" : ""}`} style={{ backgroundColor: isHud ? "rgba(30, 30, 30, 0.7)" : "#121212", height: "100vh", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, display: "flex", overflowY: "auto" }}>
         
-        {/* ✅ NEW SPLIT ENHANCE MODE */}
         {isEnhancing ? (
           <div style={{ display: "flex", width: "100%", height: "100%" }}>
             <textarea
@@ -313,12 +316,10 @@ function App() {
         <div style={{ display: "flex", gap: "10px" }}>
           <button onClick={handleGoHome}>🏠 Home</button>
 
-          {/* ✅ UPDATED BUTTON */}
           <button onClick={handleEnhance}>
             {isEnhancing ? "✍️ Edit Raw" : "✨ AI Enhance"}
           </button>
 
-          {/* ✅ APPLY / DISCARD */}
           {isEnhancing && (
             <>
               <button onClick={applyEnhancement}>✅ Apply</button>

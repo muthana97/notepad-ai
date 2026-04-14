@@ -7,7 +7,7 @@ def bundle_prompt():
     app_tsx_path = 'src/app.tsx'
 
     # Get user input for the task
-    task_input = input("Enter the TASK for the AI: ")
+    #task_input = input("Enter the TASK for the AI: ")
 
     try:
         # Read main.rs
@@ -19,20 +19,18 @@ def bundle_prompt():
             app_tsx_content = f.read()
 
         # Construct the template
-        prompt = f"""TASK: '{task_input}' please make necessary changes to the codes main.rs and app.tsx to perform the task only.
-RULE: "DO NOT make changes other than those I have proposed. if you have concerns feel free to raise them."
-CONTEXT: 
+        prompt = f""" 
 "This is a notepad project built on typescript and Rust I will share the main files below:
 main.rs:
 {main_rs_content}
 
-/Users/muthana/Documents/Projects/notepad-ai/src/app.tsx:
+app.tsx:
 {app_tsx_content}"
 """
 
         # Output the result
-        print("\n" + "="*20 + " GENERATED PROMPT " + "="*20 + "\n")
-        print(prompt)
+        #print("\n" + "="*20 + " GENERATED PROMPT " + "="*20 + "\n")
+        #print(prompt)
         
         # Optional: Copy to clipboard (requires pyperclip: pip install pyperclip)
         import pyperclip
@@ -44,3 +42,4 @@ main.rs:
 
 if __name__ == "__main__":
     bundle_prompt()
+
