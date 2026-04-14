@@ -58,12 +58,6 @@ async fn clean_with_janitor(content: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn set_session_id(state: tauri::State<'_, AppState>, session_id: String) {
-    let mut current_id = state.current_session_id.lock().unwrap();
-    *current_id = session_id;
-}
-
-#[tauri::command]
 fn set_dirty(state: tauri::State<'_, AppState>, dirty: bool) {
     state.is_dirty.store(dirty, Ordering::SeqCst);
 }
@@ -162,10 +156,7 @@ async fn get_ai_preview(content: String) -> Result<String, String> {
 fn final_close_ready(window: Window, state: tauri::State<'_, AppState>) {
     state.is_closing.store(false, Ordering::SeqCst);
     state.close_timeout_active.store(false, Ordering::SeqCst);
-
-    if let Err(e) = window.destroy() {
-        eprintln!("Window destroy error: {}", e);
-    }
+    window.destroy().unwrap();
 }
 
 #[tauri::command]
@@ -209,8 +200,7 @@ fn main() {
             get_recent_notes, 
             load_note, 
             get_ai_preview,
-            set_dirty,
-	    set_session_id
+            set_dirty
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

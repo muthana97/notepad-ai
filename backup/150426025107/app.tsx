@@ -32,9 +32,6 @@ function App() {
   useEffect(() => {
     invoke("set_dirty", { dirty: isDirty }).catch(console.error);
   }, [isDirty]);
-  useEffect(() => {
-  invoke("set_session_id", { sessionId }).catch(console.error);
-}, [sessionId]);
 
   const refreshBulletin = useCallback(async () => {
     try {

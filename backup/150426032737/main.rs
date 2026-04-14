@@ -162,10 +162,7 @@ async fn get_ai_preview(content: String) -> Result<String, String> {
 fn final_close_ready(window: Window, state: tauri::State<'_, AppState>) {
     state.is_closing.store(false, Ordering::SeqCst);
     state.close_timeout_active.store(false, Ordering::SeqCst);
-
-    if let Err(e) = window.destroy() {
-        eprintln!("Window destroy error: {}", e);
-    }
+    window.destroy().unwrap();
 }
 
 #[tauri::command]
