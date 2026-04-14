@@ -4,3 +4,5 @@ dist
 notes/
 .DS_Store
 notes_test
+GrabCodes.py
+bundle_prompt.py
