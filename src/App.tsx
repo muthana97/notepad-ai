@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import ReactMarkdown from "react-markdown";
-import "./App.css";
+import "./app.css";
 
 function App() {
   const [originalContent, setOriginalContent] = useState("");
@@ -49,9 +49,9 @@ function App() {
     if (!isDirty) return true;
 
     const confirmed = await confirm(
-      "You have unsaved changes. Discard them and go home?",
-      { title: "Unsaved Changes", type: "warning" }
-    );
+  "You have unsaved changes. Discard them and go home?",
+  { title: "Unsaved Changes" }
+);
     return confirmed;
   };
 

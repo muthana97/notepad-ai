@@ -223,8 +223,13 @@ fn main() {
                 
                 api.prevent_close();
 
-                let current_id = state.current_session_id.lock().unwrap().clone();
-
+let current_id = match state.current_session_id.lock() {
+    Ok(guard) => guard.clone(),
+    Err(_) => {
+        eprintln!("Mutex poisoned");
+        return;
+    }
+};
                 if current_id.is_empty() {
                     window.destroy().unwrap();
                     return;
