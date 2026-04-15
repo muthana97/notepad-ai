@@ -11,7 +11,6 @@ use tokio::task;
 struct AppState {
     current_session_id: Mutex<String>,
     is_closing: AtomicBool,
-    close_timeout_active: AtomicBool,
     is_dirty: AtomicBool, // Track unsaved changes
 }
 
@@ -161,7 +160,6 @@ async fn get_ai_preview(content: String) -> Result<String, String> {
 #[tauri::command]
 fn final_close_ready(window: Window, state: tauri::State<'_, AppState>) {
     state.is_closing.store(false, Ordering::SeqCst);
-    state.close_timeout_active.store(false, Ordering::SeqCst);
 
     if let Err(e) = window.destroy() {
         eprintln!("Window destroy error: {}", e);
@@ -199,7 +197,6 @@ fn main() {
         .manage(AppState { 
             current_session_id: Mutex::new(String::new()),
             is_closing: AtomicBool::new(false),
-            close_timeout_active: AtomicBool::new(false),
             is_dirty: AtomicBool::new(false),
         })
         .plugin(tauri_plugin_dialog::init())
@@ -210,26 +207,25 @@ fn main() {
             load_note, 
             get_ai_preview,
             set_dirty,
-	    set_session_id
+            set_session_id
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppState>();
                 
-                // Only show dialog if NOT already closing AND state is DIRTY
                 if state.is_closing.load(Ordering::SeqCst) || !state.is_dirty.load(Ordering::SeqCst) {
                     return;
                 }
                 
                 api.prevent_close();
 
-let current_id = match state.current_session_id.lock() {
-    Ok(guard) => guard.clone(),
-    Err(_) => {
-        eprintln!("Mutex poisoned");
-        return;
-    }
-};
+                let current_id = match state.current_session_id.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(_) => {
+                        eprintln!("Mutex poisoned");
+                        return;
+                    }
+                };
                 if current_id.is_empty() {
                     window.destroy().unwrap();
                     return;

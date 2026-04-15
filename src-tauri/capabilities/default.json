@@ -7,6 +7,7 @@
     "core:default",
     "shell:default",
     "core:window:default",
+    "dialog:allow-confirm",
     "dialog:allow-message",
     "dialog:allow-ask"
   ]
