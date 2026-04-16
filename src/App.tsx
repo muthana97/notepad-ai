@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -21,22 +22,37 @@ function App() {
   const [recentNotes, setRecentNotes] = useState<any[]>([]);
   const [isClosing, setIsClosing] = useState(false);
 
+  // FIX 1: Use state for basePath instead of hardcoded project directory path
+  const [basePath, setBasePath] = useState<string>("");
+
   const noteRef = useRef(note);
   const isCleaning = useRef(false);
 
-  const basePath = "/Users/muthana/Documents/Projects/notepad-ai/notes_test";
-
   const isDirty = note !== originalContent;
+
+  // FIX 1: Fetch app data path from backend on mount (not project directory)
+  useEffect(() => {
+    invoke<string>("get_app_data_path")
+      .then((path) => {
+        setBasePath(path);
+      })
+      .catch((err) => {
+        console.error("Failed to get app data path:", err);
+        setStatus("Path Error");
+      });
+  }, []);
 
   // Sync dirty state to Rust whenever it changes
   useEffect(() => {
     invoke("set_dirty", { dirty: isDirty }).catch(console.error);
   }, [isDirty]);
   useEffect(() => {
-  invoke("set_session_id", { sessionId }).catch(console.error);
-}, [sessionId]);
+    invoke("set_session_id", { sessionId }).catch(console.error);
+  }, [sessionId]);
 
+  // FIX 1: Guard against empty basePath when refreshing notes
   const refreshBulletin = useCallback(async () => {
+    if (!basePath) return; // Guard clause - don't fetch if path not loaded
     try {
       const notes: any[] = await invoke("get_recent_notes", { basePath });
       setRecentNotes(notes);
@@ -49,9 +65,9 @@ function App() {
     if (!isDirty) return true;
 
     const confirmed = await confirm(
-  "You have unsaved changes. Discard them and go home?",
-  { title: "Unsaved Changes" }
-);
+      "You have unsaved changes. Discard them and go home?",
+      { title: "Unsaved Changes" }
+    );
     return confirmed;
   };
 
@@ -82,12 +98,16 @@ function App() {
 
     try {
       const cleaned: string = await invoke("get_ai_preview", { content: note });
-
       setEnhancedContent(cleaned);
       setIsEnhancing(true);
       setStatus("Review changes");
-    } catch (err) {
-      setStatus("AI Failed");
+    } catch (err: any) {
+      // FIX 4: Show LLM not found error to user
+      if (err?.includes?.("Ollama is not running") || err?.toString?.().includes?.("Ollama")) {
+        setStatus("❌ Ollama not running - Start Ollama first");
+      } else {
+        setStatus("AI Failed");
+      }
     } finally {
       isCleaning.current = false;
     }
@@ -105,11 +125,18 @@ function App() {
     setStatus("Enhancement discarded");
   };
 
+  // FIX 1 & 3: Updated performSave with basePath guard and separate AI cleanup flag
   const performSave = useCallback(async (options: {
     isFinal?: boolean;
-    backgroundClean?: boolean
+    runAiCleanup?: boolean  // Renamed from backgroundClean to be explicit
   } = {}) => {
-    const { isFinal = false, backgroundClean = false } = options;
+    // FIX 1: Guard against empty basePath
+    if (!basePath) {
+      setStatus("❌ Error: App data path not loaded");
+      return;
+    }
+
+    const { isFinal = false, runAiCleanup = false } = options;
     const contentToSave = noteRef.current;
 
     if (contentToSave.trim() === "") {
@@ -117,14 +144,15 @@ function App() {
       return;
     }
 
-    setStatus(backgroundClean ? "Saving (AI in background)..." : "Saving...");
+    // FIX 3: AI cleanup is now separate from save - only runs when explicitly requested
+    setStatus(runAiCleanup ? "Saving (AI cleanup in background)..." : "Saving...");
 
     try {
       await invoke("process_note", {
         content: contentToSave,
         sessionId,
         basePath,
-        backgroundClean
+        runAiCleanup  // FIX 3: Pass the explicit flag - save doesn't auto-trigger AI
       });
 
       setOriginalContent(contentToSave);
@@ -134,7 +162,7 @@ function App() {
         return;
       }
 
-      setStatus(backgroundClean ? "Saved (Cleaning...)" : "Saved");
+      setStatus(runAiCleanup ? "Saved (AI cleaning...)" : "Saved");
       setTimeout(() => setStatus("Ready"), 2000);
     } catch (err) {
       setStatus(`Error: ${err}`);
@@ -145,7 +173,7 @@ function App() {
     const unlistenSave = listen("request-final-save", async () => {
       if (isClosing) return;
       setIsClosing(true);
-      await performSave({ isFinal: true, backgroundClean: false });
+      await performSave({ isFinal: true, runAiCleanup: false });
     });
 
     return () => {
@@ -179,7 +207,6 @@ function App() {
         : path;
 
       const rawPath = `${folderPath}/raw_note.txt`;
-
       const rawContent: string = await invoke("load_note", { path: rawPath });
 
       setNote(rawContent);
@@ -330,7 +357,10 @@ function App() {
             </>
           )}
 
-          <button onClick={() => performSave()}>💾 Save</button>
+          {/* FIX 3: Save button now ONLY saves, no AI cleanup */}
+          <button onClick={() => performSave({ runAiCleanup: false })}>💾 Save</button>
+          
+
         </div>
       </div>
     </div>

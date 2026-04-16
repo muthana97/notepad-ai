@@ -37,7 +37,19 @@ struct OllamaResponse {
     response: String,
 }
 
+// FIX 4: Check if Ollama is available before making requests
+async fn check_ollama_available() -> Result<(), String> {
+    let client = reqwest::Client::new();
+    match client.get("http://localhost:11434/api/tags").timeout(std::time::Duration::from_secs(2)).send().await {
+        Ok(_) => Ok(()),
+        Err(_) => Err("Ollama is not running. Please start Ollama first.".to_string()),
+    }
+}
+
 async fn clean_with_janitor(content: &str) -> Result<String, String> {
+    // FIX 4: Check if Ollama is available first
+    check_ollama_available().await?;
+    
     let client = reqwest::Client::new();
     let system_msg = "You are a text clarity enhancer 1. Organize the text to enhance clarity using bullet points where necessary . 2. DO NOT add info. 3. DO NOT include greetings. Return ONLY formatted text.";
 
@@ -65,6 +77,16 @@ fn set_session_id(state: tauri::State<'_, AppState>, session_id: String) {
 #[tauri::command]
 fn set_dirty(state: tauri::State<'_, AppState>, dirty: bool) {
     state.is_dirty.store(dirty, Ordering::SeqCst);
+}
+
+// FIX 1: Get the app data directory path - NOTES SAVED TO APP DATA DIR, NOT PROJECT DIR
+#[tauri::command]
+fn get_app_data_path(app_handle: tauri::AppHandle) -> Result<String, String> {
+    app_handle
+        .path()
+        .app_data_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -108,7 +130,7 @@ async fn process_note(
     content: String, 
     session_id: String,
     base_path: String,
-    background_clean: Option<bool>,
+    run_ai_cleanup: Option<bool>,  // FIX 3: Changed from background_clean to explicit AI cleanup flag
     state: tauri::State<'_, AppState>
 ) -> Result<String, String> {
     {
@@ -117,32 +139,45 @@ async fn process_note(
     } 
 
     let session_path = Path::new(&base_path).join(format!("TEMP_{}", session_id));
+    
+    // FIX 2: Create temp directory for atomic writes - WRITE TO TEMP FIRST
+    let temp_dir = session_path.join(".temp");
+    if !temp_dir.exists() {
+        fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    }
+    
     if !session_path.exists() {
         fs::create_dir_all(&session_path).map_err(|e| e.to_string())?;
     }
 
-    fs::write(session_path.join("raw_note.txt"), &content).map_err(|e| e.to_string())?;
+    // FIX 2: Write to temp file first, then move for atomic operation
+    let temp_file = temp_dir.join("raw_note.txt.tmp");
+    let final_file = session_path.join("raw_note.txt");
+    
+    fs::write(&temp_file, &content).map_err(|e| e.to_string())?;
+    fs::rename(&temp_file, &final_file).map_err(|e| format!("Failed to save note: {}", e))?;
 
-    if !content.trim().is_empty() {
-        let should_background = background_clean.unwrap_or(false);
+    // FIX 3: AI cleanup is now optional and explicit - NOT tied to save operation
+    let should_run_ai = run_ai_cleanup.unwrap_or(false);
+    if should_run_ai && !content.trim().is_empty() {
+        // Run AI cleanup in background
+        let content_clone = content.clone();
+        let path_clone = session_path.clone();
         
-        if should_background {
-            let content_clone = content.clone();
-            let path_clone = session_path.clone();
-            
-            task::spawn(async move {
-                println!("Background cleaning starting...");
-                if let Ok(clean_text) = clean_with_janitor(&content_clone).await {
+        task::spawn(async move {
+            println!("Background AI cleanup starting...");
+            match clean_with_janitor(&content_clone).await {
+                Ok(clean_text) => {
                     let _ = fs::write(path_clone.join("cleaned_note.md"), &clean_text);
-                    println!("Background cleaning complete");
+                    println!("Background AI cleanup complete");
                 }
-            });
-        } else {
-            if let Ok(clean_text) = clean_with_janitor(&content).await {
-                fs::write(session_path.join("cleaned_note.md"), &clean_text)
-                    .map_err(|e| e.to_string())?;
+                Err(e) => {
+                    eprintln!("AI cleanup failed: {}", e);
+                    // Write error file to indicate failure
+                    let _ = fs::write(path_clone.join("cleaned_note.md"), format!("<!-- AI cleanup failed: {} -->\n{}", e, content_clone));
+                }
             }
-        }
+        });
     }
 
     Ok(format!("Saved: {}", session_id))
@@ -207,7 +242,8 @@ fn main() {
             load_note, 
             get_ai_preview,
             set_dirty,
-            set_session_id
+            set_session_id,
+            get_app_data_path  // FIX 1: Register new command
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
